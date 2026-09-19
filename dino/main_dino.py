@@ -103,6 +103,14 @@ def get_args_parser():
     parser.add_argument('--optimizer', default='adamw', type=str,
         choices=['adamw', 'sgd', 'lars'], help="""Type of optimizer. We recommend using adamw with ViTs.""")
     parser.add_argument('--drop_path_rate', type=float, default=0.1, help="stochastic depth rate")
+    parser.add_argument('--pretrained_backbone', default='', type=str, help="""Path to a backbone-only
+        checkpoint (flat state_dict, e.g. the official dino_deitsmall16_pretrain.pth) to warm-start the
+        student (and, since the teacher is initialised as a copy of the student below, the teacher too)
+        BEFORE training starts. Unlike --resume/restart_from_checkpoint (which restores full training
+        state -- optimizer, epoch, schedules), this loads ONLY the backbone weights and then trains a
+        brand-new schedule from epoch 0. This is the continued-pretraining entry point official DINO v1
+        does not provide out of the box (DINOv2's config has student.pretrained_weights for exactly this;
+        DINO v1 only has full-state resume). Default: '' (train from random init, original behavior).""")
 
     # Multi-crop parameters
     parser.add_argument('--global_crops_scale', type=float, nargs='+', default=(0.4, 1.),
@@ -165,6 +173,18 @@ def train_dino(args):
         )
         teacher = vits.__dict__[args.arch](patch_size=args.patch_size)
         embed_dim = student.embed_dim
+        if args.pretrained_backbone:
+            state_dict = torch.load(args.pretrained_backbone, map_location="cpu")
+            if "model" in state_dict and isinstance(state_dict["model"], dict):
+                state_dict = state_dict["model"]  # tolerate a {"model": sd}-wrapped checkpoint too
+            missing, unexpected = student.load_state_dict(state_dict, strict=False)
+            if missing or unexpected:
+                raise RuntimeError(
+                    f"--pretrained_backbone {args.pretrained_backbone}: state_dict mismatch\n"
+                    f"  missing={missing}\n  unexpected={unexpected}")
+            print(f"Warm-started student backbone from {args.pretrained_backbone} "
+                  f"({len(state_dict)} tensors, 0 missing/unexpected) -- continued pretraining, "
+                  f"fresh schedule from epoch 0. Teacher copies these same weights below.")
     # if the network is a XCiT
     elif args.arch in torch.hub.list("facebookresearch/xcit:main"):
         student = torch.hub.load('facebookresearch/xcit:main', args.arch,
